@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "target": "es6",
+        "lib": [
+            "es6"
+        ],
+        "module": "commonjs",
+        "rootDir": "./src",
+        "outDir": "./out",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": [
+        "src/**/*.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        ".vscode-test"
+    ]
+}
