@@ -75,7 +75,7 @@ class FileOperationResponse(BaseModel):
     content: Optional[str] = None
 
 # Initialize Ollama with Gemma-3n 4B
-MODEL = "gemma3:1b"
+MODEL = "codegemma:2b"
 try:
     ollama.pull(MODEL)
     print(f"✅ Model {MODEL} loaded successfully")
