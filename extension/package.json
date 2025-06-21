@@ -24,7 +24,6 @@
         "Other"
     ],
     "activationEvents": [
-        "onView:gemmapilot.chat",
         "onStartupFinished"
     ],
     "main": "./out/extension.js",
@@ -51,26 +50,148 @@
         },
         "commands": [
             {
-                "command": "gemmapilot.executeCommand",
-                "title": "Execute Command",
-                "category": "GemmaPilot"
-            },
-            {
                 "command": "gemmapilot.openChat",
                 "title": "Open Chat",
-                "category": "GemmaPilot"
+                "category": "GemmaPilot",
+                "icon": "$(comment-discussion)"
+            },
+            {
+                "command": "gemmapilot.executeCommand",
+                "title": "Execute Command",
+                "category": "GemmaPilot",
+                "icon": "$(terminal)"
+            },
+            {
+                "command": "gemmapilot.explainCode",
+                "title": "Explain Code",
+                "category": "GemmaPilot",
+                "icon": "$(info)"
+            },
+            {
+                "command": "gemmapilot.fixCode",
+                "title": "Fix Code Issues",
+                "category": "GemmaPilot",
+                "icon": "$(wrench)"
+            },
+            {
+                "command": "gemmapilot.optimizeCode",
+                "title": "Optimize Code",
+                "category": "GemmaPilot",
+                "icon": "$(zap)"
+            },
+            {
+                "command": "gemmapilot.generateTests",
+                "title": "Generate Tests",
+                "category": "GemmaPilot",
+                "icon": "$(beaker)"
+            },
+            {
+                "command": "gemmapilot.generateDocs",
+                "title": "Generate Documentation",
+                "category": "GemmaPilot",
+                "icon": "$(book)"
+            },
+            {
+                "command": "gemmapilot.analyzeFile",
+                "title": "Analyze Current File",
+                "category": "GemmaPilot",
+                "icon": "$(search)"
             },
             {
                 "command": "gemmapilot.debug",
                 "title": "Debug Test",
-                "category": "GemmaPilot"
+                "category": "GemmaPilot",
+                "icon": "$(bug)"
             }
         ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "gemmapilot.explainCode",
+                    "when": "editorHasSelection",
+                    "group": "gemmapilot@1"
+                },
+                {
+                    "command": "gemmapilot.fixCode",
+                    "when": "editorHasSelection",
+                    "group": "gemmapilot@2"
+                },
+                {
+                    "command": "gemmapilot.optimizeCode",
+                    "when": "editorHasSelection",
+                    "group": "gemmapilot@3"
+                },
+                {
+                    "command": "gemmapilot.generateTests",
+                    "when": "editorHasSelection",
+                    "group": "gemmapilot@4"
+                },
+                {
+                    "command": "gemmapilot.generateDocs",
+                    "when": "editorHasSelection",
+                    "group": "gemmapilot@5"
+                }
+            ],
+            "explorer/context": [
+                {
+                    "command": "gemmapilot.analyzeFile",
+                    "when": "resourceExtname =~ /\\.(js|ts|py|java|cpp|c|go|rs|php|rb)$/",
+                    "group": "gemmapilot@1"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "gemmapilot.openChat"
+                },
+                {
+                    "command": "gemmapilot.explainCode",
+                    "when": "editorIsOpen"
+                },
+                {
+                    "command": "gemmapilot.fixCode",
+                    "when": "editorIsOpen"
+                },
+                {
+                    "command": "gemmapilot.optimizeCode",
+                    "when": "editorIsOpen"
+                },
+                {
+                    "command": "gemmapilot.generateTests",
+                    "when": "editorIsOpen"
+                },
+                {
+                    "command": "gemmapilot.generateDocs",
+                    "when": "editorIsOpen"
+                },
+                {
+                    "command": "gemmapilot.analyzeFile",
+                    "when": "editorIsOpen"
+                }
+            ]
+        },
         "keybindings": [
             {
                 "command": "gemmapilot.openChat",
                 "key": "ctrl+shift+g",
                 "mac": "cmd+shift+g",
+                "when": "editorTextFocus"
+            },
+            {
+                "command": "gemmapilot.explainCode",
+                "key": "ctrl+shift+e",
+                "mac": "cmd+shift+e",
+                "when": "editorHasSelection"
+            },
+            {
+                "command": "gemmapilot.fixCode",
+                "key": "ctrl+shift+f",
+                "mac": "cmd+shift+f",
+                "when": "editorHasSelection"
+            },
+            {
+                "command": "gemmapilot.generateTests",
+                "key": "ctrl+shift+t",
+                "mac": "cmd+shift+t",
                 "when": "editorTextFocus"
             }
         ]

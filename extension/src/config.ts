@@ -52,18 +52,29 @@ export class Utils {
      * Validates if a command is potentially dangerous
      */
     static isDangerousCommand(command: string): boolean {
-        const dangerous = [
+        const dangerousPatterns = [
             'rm -rf',
             'sudo rm',
             'format',
-            'del /f',
-            '> /dev/null',
+            'fdisk',
+            'mkfs',
+            'dd if=',
+            '> /dev/',
+            'chmod 777',
+            'chown -R',
+            'killall',
             'shutdown',
             'reboot',
-            'dd if=',
-            'mkfs'
+            'init 0',
+            'init 6',
+            'halt',
+            'poweroff',
+            'del /f',
+            '> /dev/null'
         ];
-        return dangerous.some(cmd => command.toLowerCase().includes(cmd));
+        
+        const lowerCommand = command.toLowerCase().trim();
+        return dangerousPatterns.some(pattern => lowerCommand.includes(pattern));
     }
 
     /**
