@@ -24,16 +24,28 @@
         "Other"
     ],
     "activationEvents": [
-        "onView:gemmapilot.chat"
+        "onView:gemmapilot.chat",
+        "onStartupFinished"
     ],
     "main": "./out/extension.js",
     "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "gemmapilot",
+                    "title": "GemmaPilot",
+                    "icon": "$(comment-discussion)"
+                }
+            ]
+        },
         "views": {
-            "explorer": [
+            "gemmapilot": [
                 {
                     "id": "gemmapilot.chat",
-                    "name": "GemmaPilot Chat",
-                    "when": "true"
+                    "name": "Chat",
+                    "type": "webview",
+                    "when": "true",
+                    "icon": "$(comment-discussion)"
                 }
             ]
         },

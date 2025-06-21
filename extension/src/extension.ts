@@ -48,13 +48,22 @@ function makeRequest(url: string, options: any = {}): Promise<any> {
 }
 
 class GemmaPilotChatProvider implements WebviewViewProvider {
-    resolveWebviewView(webviewView: WebviewView): void {
+    public static readonly viewType = 'gemmapilot.chat';
+
+    constructor(private readonly context: vscode.ExtensionContext) {}
+
+    resolveWebviewView(
+        webviewView: WebviewView,
+        context: vscode.WebviewViewResolveContext<unknown>,
+        token: vscode.CancellationToken
+    ): void | Thenable<void> {
         console.log('🔧 GemmaPilotChatProvider.resolveWebviewView called');
         console.log('📋 WebviewView object:', webviewView);
         vscode.window.showInformationMessage('GemmaPilot: WebView is being resolved!');
+        
         webviewView.webview.options = { 
             enableScripts: true,
-            localResourceRoots: []
+            localResourceRoots: [this.context.extensionUri]
         };
         
         console.log('🎨 Setting webview HTML content');
@@ -74,6 +83,9 @@ class GemmaPilotChatProvider implements WebviewViewProvider {
                 });
             }
         });
+
+        // Show a welcome message
+        webviewView.show?.(true);
     }
 
     private async handleChatMessage(webviewView: WebviewView, prompt: string): Promise<void> {
@@ -191,7 +203,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Register chat provider
     console.log('📝 Registering GemmaPilot chat provider...');
-    const chatProvider = new GemmaPilotChatProvider();
+    const chatProvider = new GemmaPilotChatProvider(context);
     const chatDisposable = vscode.window.registerWebviewViewProvider('gemmapilot.chat', chatProvider);
     context.subscriptions.push(chatDisposable);
     console.log('✅ GemmaPilot chat provider registered successfully');
@@ -303,7 +315,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.commands.registerCommand('gemmapilot.openChat', () => {
             console.log('🔍 Opening GemmaPilot chat view...');
-            vscode.commands.executeCommand('gemmapilot.chat.focus');
+            vscode.commands.executeCommand('workbench.view.extension.gemmapilot');
         })
     );
 
