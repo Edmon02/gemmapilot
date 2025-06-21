@@ -8,6 +8,9 @@ export const CONFIG: GemmaPilotConfig = {
     backendUrl: 'http://localhost:8000',
     timeout: 30000,
     enableAutoComplete: true,
+    maxFileSize: 1024 * 1024, // 1MB
+    enableFileAnalysis: true,
+    enableCommandExecution: true,
     supportedLanguages: [
         'python',
         'javascript', 
@@ -18,7 +21,14 @@ export const CONFIG: GemmaPilotConfig = {
         'go',
         'rust',
         'php',
-        'ruby'
+        'ruby',
+        'json',
+        'yaml',
+        'markdown',
+        'html',
+        'css',
+        'sql',
+        'shell'
     ]
 };
 

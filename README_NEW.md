@@ -46,7 +46,7 @@ GemmaPilot is a powerful AI coding assistant for VS Code that provides intellige
 
 ```
 ┌─────────────────┐    HTTP/REST    ┌──────────────────┐
-│   VS Code       │ ◄──────────────► │ FastAPI Backend  │
+│   VS Code       │ ◄─────────────► │ FastAPI Backend  │
 │   Extension     │                 │                  │
 │                 │                 │ ┌──────────────┐ │
 │ ┌─────────────┐ │                 │ │   Ollama     │ │
