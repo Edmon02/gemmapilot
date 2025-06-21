@@ -48,6 +48,32 @@ class ChatResponse(BaseModel):
     files_referenced: List[str] = []
     commands_suggested: List[str] = []
 
+# Additional Pydantic models for enhanced functionality
+class CodeActionRequest(BaseModel):
+    action: str  # explain_code, fix_code, optimize_code, generate_tests, generate_docs
+    code: str
+    language: str
+    file_path: Optional[str] = ""
+    workspace_path: Optional[str] = ""
+
+class FileOperationRequest(BaseModel):
+    operation: str  # create, read, write, delete, mkdir
+    file_path: str
+    content: Optional[str] = ""
+    workspace_path: Optional[str] = ""
+
+class CodeActionResponse(BaseModel):
+    response: str
+    formatted_response: str
+    suggested_code: Optional[str] = None
+    file_operations: List[Dict[str, Any]] = []
+    commands: List[str] = []
+
+class FileOperationResponse(BaseModel):
+    success: bool
+    message: str
+    content: Optional[str] = None
+
 # Initialize Ollama with Gemma-3n 4B
 MODEL = "gemma3:1b"
 try:
@@ -412,9 +438,238 @@ Provide only the completion, no explanations."""
     finally:
         await websocket.close()
 
-if __name__ == "__main__":
-    import uvicorn
-    print("🚀 Starting GemmaPilot Enhanced Backend...")
-    print("📋 Features: File analysis, Enhanced chat, Command execution, Workspace integration")
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+@app.post("/code_action", response_model=CodeActionResponse)
+async def handle_code_action(request: CodeActionRequest):
+    """Handle code actions like explain, fix, optimize, generate tests, etc."""
+    try:
+        # Build context for the AI
+        context_parts = []
+        
+        if request.file_path and os.path.exists(request.file_path):
+            file_content = get_file_content(request.file_path)
+            context_parts.append(f"Current file: {request.file_path}\n{file_content}")
+        
+        if request.workspace_path and os.path.exists(request.workspace_path):
+            workspace_structure = get_workspace_structure(request.workspace_path)
+            context_parts.append(f"Workspace structure:\n{workspace_structure}")
+        
+        context = "\n\n".join(context_parts)
+        
+        # Create action-specific prompts
+        action_prompts = {
+            "explain_code": f"""Please explain this {request.language} code in detail:
+
+```{request.language}
+{request.code}
+```
+
+Provide a clear, comprehensive explanation of:
+1. What the code does
+2. How it works
+3. Key concepts used
+4. Any potential issues or improvements
+
+Context: {context}""",
+
+            "fix_code": f"""Please analyze this {request.language} code for issues and provide fixes:
+
+```{request.language}
+{request.code}
+```
+
+Please:
+1. Identify any bugs, errors, or issues
+2. Provide corrected code
+3. Explain what was wrong and how you fixed it
+4. Suggest best practices
+
+Context: {context}""",
+
+            "optimize_code": f"""Please optimize this {request.language} code for better performance and readability:
+
+```{request.language}
+{request.code}
+```
+
+Please:
+1. Analyze current performance characteristics
+2. Provide optimized version
+3. Explain the improvements made
+4. Consider memory usage, speed, and maintainability
+
+Context: {context}""",
+
+            "generate_tests": f"""Please generate comprehensive tests for this {request.language} code:
+
+```{request.language}
+{request.code}
+```
+
+Please:
+1. Create unit tests that cover all functionality
+2. Include edge cases and error conditions
+3. Use appropriate testing framework for {request.language}
+4. Provide clear test descriptions
+
+Context: {context}""",
+
+            "generate_docs": f"""Please generate comprehensive documentation for this {request.language} code:
+
+```{request.language}
+{request.code}
+```
+
+Please:
+1. Create detailed docstrings/comments
+2. Document parameters, return values, and exceptions
+3. Provide usage examples
+4. Include any relevant notes or warnings
+
+Context: {context}"""
+        }
+        
+        prompt = action_prompts.get(request.action, f"Please help with this {request.language} code:\n\n```{request.language}\n{request.code}\n```")
+        
+        # Get AI response
+        response = ollama.chat(model=MODEL, messages=[
+            {"role": "system", "content": "You are an expert software developer and code assistant. Provide helpful, accurate, and detailed responses about code."},
+            {"role": "user", "content": prompt}
+        ])
+        
+        ai_response = response['message']['content']
+        
+        # Extract code blocks and file operations from response
+        suggested_code = None
+        file_operations = []
+        commands = []
+        
+        # Look for code blocks in the response
+        import re
+        code_blocks = re.findall(r'```\w*\n(.*?)\n```', ai_response, re.DOTALL)
+        if code_blocks:
+            suggested_code = code_blocks[0].strip()
+        
+        # Look for file operation suggestions
+        if "create file" in ai_response.lower() or "new file" in ai_response.lower():
+            file_operations.append({
+                "type": "create_file",
+                "description": "Create new file as suggested by AI"
+            })
+        
+        # Look for command suggestions
+        command_patterns = [
+            r'npm install ([\w\-@/]+)',
+            r'pip install ([\w\-]+)',
+            r'cargo add ([\w\-]+)',
+            r'yarn add ([\w\-@/]+)'
+        ]
+        
+        for pattern in command_patterns:
+            matches = re.findall(pattern, ai_response)
+            for match in matches:
+                commands.append(f"Install package: {match}")
+        
+        return CodeActionResponse(
+            response=ai_response,
+            formatted_response=ai_response.replace('\n', '<br>'),
+            suggested_code=suggested_code,
+            file_operations=file_operations,
+            commands=commands
+        )
+        
+    except Exception as e:
+        print(f"Error in code_action: {e}")
+        raise HTTPException(status_code=500, detail=f"Code action failed: {str(e)}")
+
+@app.post("/file_operation", response_model=FileOperationResponse)
+async def handle_file_operation(request: FileOperationRequest):
+    """Handle file operations like create, read, write, delete"""
+    try:
+        file_path = request.file_path
+        
+        # Security check - ensure file is within workspace
+        if request.workspace_path:
+            workspace_path = os.path.abspath(request.workspace_path)
+            abs_file_path = os.path.abspath(file_path)
+            if not abs_file_path.startswith(workspace_path):
+                raise HTTPException(status_code=403, detail="File path outside workspace not allowed")
+        
+        if request.operation == "create":
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Check if file already exists
+            if os.path.exists(file_path):
+                return FileOperationResponse(
+                    success=False,
+                    message=f"File {file_path} already exists"
+                )
+            
+            # Create file with content
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(request.content or "")
+            
+            return FileOperationResponse(
+                success=True,
+                message=f"File {file_path} created successfully"
+            )
+        
+        elif request.operation == "read":
+            if not os.path.exists(file_path):
+                return FileOperationResponse(
+                    success=False,
+                    message=f"File {file_path} not found"
+                )
+            
+            content = get_file_content(file_path)
+            return FileOperationResponse(
+                success=True,
+                message=f"File {file_path} read successfully",
+                content=content
+            )
+        
+        elif request.operation == "write":
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(request.content or "")
+            
+            return FileOperationResponse(
+                success=True,
+                message=f"File {file_path} written successfully"
+            )
+        
+        elif request.operation == "delete":
+            if not os.path.exists(file_path):
+                return FileOperationResponse(
+                    success=False,
+                    message=f"File {file_path} not found"
+                )
+            
+            os.remove(file_path)
+            return FileOperationResponse(
+                success=True,
+                message=f"File {file_path} deleted successfully"
+            )
+        
+        elif request.operation == "mkdir":
+            os.makedirs(file_path, exist_ok=True)
+            return FileOperationResponse(
+                success=True,
+                message=f"Directory {file_path} created successfully"
+            )
+        
+        else:
+            return FileOperationResponse(
+                success=False,
+                message=f"Unknown operation: {request.operation}"
+            )
+    
+    except Exception as e:
+        print(f"Error in file_operation: {e}")
+        return FileOperationResponse(
+            success=False,
+            message=f"File operation failed: {str(e)}"
+        )
 

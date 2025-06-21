@@ -203,6 +203,10 @@ export class GemmaPilotChatProvider implements WebviewViewProvider {
                 code_blocks: data.code_blocks || []
             });
 
+            // Check if the AI response contains file creation or command suggestions
+            const aiResponse = data.response || data.content || '';
+            await this.parseAndHandleAIActions(webviewView, aiResponse);
+
         } catch (error) {
             console.error('Error in chat message:', error);
             webviewView.webview.postMessage({ 
@@ -518,10 +522,15 @@ export class GemmaPilotChatProvider implements WebviewViewProvider {
                 message: `${action.charAt(0).toUpperCase() + action.slice(1).replace('_', ' ')}ing code...`
             });
 
+            const activeEditor = vscode.window.activeTextEditor;
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+
             const requestData = {
                 action: action,
                 code: code,
-                language: language
+                language: language,
+                file_path: activeEditor?.document.fileName || '',
+                workspace_path: workspaceFolder?.uri.fsPath || ''
             };
 
             const response = await makeRequest(`${CONFIG.backendUrl}/code_action`, {
@@ -535,19 +544,326 @@ export class GemmaPilotChatProvider implements WebviewViewProvider {
             }
 
             const data = response.data || {};
+            
+            // Handle the response and show it to user
+            const content = data.result || data.response || 'Analysis complete';
             webviewView.webview.postMessage({
                 type: 'response',
-                content: data.result || 'Analysis complete',
-                code_blocks: data.code_blocks || [],
-                suggestions: data.suggestions || []
+                content: content
             });
+
+            // If there's suggested code, offer to create/apply it
+            if (data.suggested_code) {
+                await this.handleCodeSuggestion(webviewView, data.suggested_code, action);
+            }
+
+            // If there are code blocks, offer to apply them
+            if (data.code_blocks && data.code_blocks.length > 0) {
+                for (const block of data.code_blocks) {
+                    await this.handleCodeSuggestion(webviewView, block.code, action);
+                }
+            }
+
+            // If there are file operations suggested, handle them
+            if (data.file_operations && data.file_operations.length > 0) {
+                await this.handleFileOperationSuggestions(webviewView, data.file_operations);
+            }
+
+            // If there are commands suggested, handle them
+            if (data.commands && data.commands.length > 0) {
+                await this.handleCommandSuggestions(webviewView, data.commands);
+            }
 
         } catch (error) {
             console.error(`Error in ${action}:`, error);
             webviewView.webview.postMessage({
                 type: 'error',
-                error: `Failed to ${action.replace('_', ' ')} code`
+                error: `Failed to ${action.replace('_', ' ')} code: ${error}`
             });
+        }
+    }
+
+    private async handleCodeSuggestion(webviewView: WebviewView, suggestedCode: string, action: string): Promise<void> {
+        try {
+            const activeEditor = vscode.window.activeTextEditor;
+            if (!activeEditor) {
+                webviewView.webview.postMessage({
+                    type: 'response',
+                    content: `Here's the suggested code:\n\n\`\`\`code\n${suggestedCode}\n\`\`\``
+                });
+                return;
+            }
+
+            // Ask user if they want to apply the suggested code
+            const choice = await vscode.window.showInformationMessage(
+                `Apply the suggested ${action.replace('_', ' ')}?`,
+                'Apply to Selection',
+                'Create New File',
+                'Show Only'
+            );
+
+            if (choice === 'Apply to Selection') {
+                const edit = new vscode.WorkspaceEdit();
+                const selection = activeEditor.selection.isEmpty 
+                    ? new vscode.Range(activeEditor.document.positionAt(0), activeEditor.document.positionAt(activeEditor.document.getText().length))
+                    : activeEditor.selection;
+                    
+                edit.replace(activeEditor.document.uri, selection, suggestedCode);
+                await vscode.workspace.applyEdit(edit);
+                
+                webviewView.webview.postMessage({
+                    type: 'response',
+                    content: '✅ Code applied successfully!'
+                });
+                
+            } else if (choice === 'Create New File') {
+                const fileName = await vscode.window.showInputBox({
+                    prompt: 'Enter filename for the new file',
+                    value: `suggested_${action}.${this.getFileExtension(activeEditor.document.languageId)}`
+                });
+                
+                if (fileName) {
+                    await this.createNewFileWithContent(fileName, suggestedCode);
+                    webviewView.webview.postMessage({
+                        type: 'response',
+                        content: `✅ Created new file: ${fileName}`
+                    });
+                }
+                
+            } else {
+                // Show only
+                webviewView.webview.postMessage({
+                    type: 'response',
+                    content: `Here's the suggested code:\n\n\`\`\`${activeEditor.document.languageId}\n${suggestedCode}\n\`\`\``
+                });
+            }
+            
+        } catch (error) {
+            console.error('Error handling code suggestion:', error);
+            webviewView.webview.postMessage({
+                type: 'error',
+                error: 'Failed to handle code suggestion'
+            });
+        }
+    }
+
+    private async handleFileOperationSuggestions(webviewView: WebviewView, fileOperations: any[]): Promise<void> {
+        try {
+            for (const operation of fileOperations) {
+                const choice = await vscode.window.showInformationMessage(
+                    `${operation.description || 'Perform file operation'}?`,
+                    'Yes',
+                    'No'
+                );
+                
+                if (choice === 'Yes') {
+                    // Handle different types of file operations
+                    if (operation.type === 'create_file') {
+                        const fileName = await vscode.window.showInputBox({
+                            prompt: 'Enter filename',
+                            value: operation.filename || 'new_file.txt'
+                        });
+                        
+                        if (fileName) {
+                            await this.createNewFileWithContent(fileName, operation.content || '');
+                            webviewView.webview.postMessage({
+                                type: 'response',
+                                content: `✅ Created file: ${fileName}`
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error handling file operations:', error);
+            webviewView.webview.postMessage({
+                type: 'error',
+                error: 'Failed to handle file operations'
+            });
+        }
+    }
+
+    private async handleCommandSuggestions(webviewView: WebviewView, commands: string[]): Promise<void> {
+        try {
+            for (const command of commands) {
+                const choice = await vscode.window.showInformationMessage(
+                    `Execute command: ${command}?`,
+                    'Execute',
+                    'Skip'
+                );
+                
+                if (choice === 'Execute') {
+                    const terminal = vscode.window.createTerminal({
+                        name: 'Gemma Pilot',
+                        cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+                    });
+                    
+                    terminal.sendText(command);
+                    terminal.show();
+                    
+                    webviewView.webview.postMessage({
+                        type: 'response',
+                        content: `✅ Executed command: ${command}`
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('Error handling command suggestions:', error);
+            webviewView.webview.postMessage({
+                type: 'error',
+                error: 'Failed to handle command suggestions'
+            });
+        }
+    }
+
+    private async createNewFileWithContent(fileName: string, content: string): Promise<void> {
+        try {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                throw new Error('No workspace folder open');
+            }
+            
+            const filePath = path.join(workspaceFolder.uri.fsPath, fileName);
+            const fileUri = vscode.Uri.file(filePath);
+            
+            // Create directory if needed
+            const dirPath = path.dirname(filePath);
+            if (!fs.existsSync(dirPath)) {
+                fs.mkdirSync(dirPath, { recursive: true });
+            }
+            
+            // Write file
+            fs.writeFileSync(filePath, content, 'utf8');
+            
+            // Open the file
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            await vscode.window.showTextDocument(document);
+            
+        } catch (error) {
+            console.error('Error creating file:', error);
+            throw error;
+        }
+    }
+
+    private getFileExtension(languageId: string): string {
+        const extensions: { [key: string]: string } = {
+            'typescript': 'ts',
+            'javascript': 'js',
+            'python': 'py',
+            'java': 'java',
+            'cpp': 'cpp',
+            'c': 'c',
+            'go': 'go',
+            'rust': 'rs',
+            'php': 'php',
+            'ruby': 'rb',
+            'html': 'html',
+            'css': 'css',
+            'json': 'json',
+            'yaml': 'yml',
+            'markdown': 'md'
+        };
+        
+        return extensions[languageId] || 'txt';
+    }
+
+    private async parseAndHandleAIActions(webviewView: WebviewView, aiResponse: string): Promise<void> {
+        try {
+            // Look for file creation suggestions
+            const createFileRegex = /(?:create|make|generate)\s+(?:a\s+)?(?:new\s+)?file\s+(?:called\s+|named\s+)?["`']?([^"`'\s]+)["`']?/gi;
+            let match;
+            
+            while ((match = createFileRegex.exec(aiResponse)) !== null) {
+                const fileName = match[1];
+                
+                // Extract code block that might be intended for this file
+                const codeBlockRegex = new RegExp(`\`\`\`\\w*\\n([\\s\\S]*?)\\n\`\`\``, 'g');
+                const codeMatch = codeBlockRegex.exec(aiResponse);
+                const codeContent = codeMatch ? codeMatch[1] : '';
+                
+                const choice = await vscode.window.showInformationMessage(
+                    `Create file "${fileName}"?`,
+                    'Create',
+                    'Skip'
+                );
+                
+                if (choice === 'Create') {
+                    await this.createNewFileWithContent(fileName, codeContent);
+                    webviewView.webview.postMessage({
+                        type: 'response',
+                        content: `✅ Created file: ${fileName}`
+                    });
+                }
+            }
+            
+            // Look for command execution suggestions
+            const commandPatterns = [
+                /npm install ([^\s]+)/gi,
+                /pip install ([^\s]+)/gi,
+                /yarn add ([^\s]+)/gi,
+                /cargo add ([^\s]+)/gi,
+                /go get ([^\s]+)/gi,
+                /mkdir ([^\s]+)/gi,
+                /cd ([^\s]+)/gi
+            ];
+            
+            for (const pattern of commandPatterns) {
+                let commandMatch;
+                while ((commandMatch = pattern.exec(aiResponse)) !== null) {
+                    const fullCommand = commandMatch[0];
+                    
+                    const choice = await vscode.window.showInformationMessage(
+                        `Execute command: "${fullCommand}"?`,
+                        'Execute',
+                        'Skip'
+                    );
+                    
+                    if (choice === 'Execute') {
+                        const terminal = vscode.window.createTerminal({
+                            name: 'GemmaPilot',
+                            cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+                        });
+                        
+                        terminal.sendText(fullCommand);
+                        terminal.show();
+                        
+                        webviewView.webview.postMessage({
+                            type: 'response',
+                            content: `✅ Executed: ${fullCommand}`
+                        });
+                    }
+                }
+            }
+            
+            // Look for directory creation suggestions
+            const mkdirRegex = /(?:create|make)\s+(?:a\s+)?(?:new\s+)?(?:directory|folder)\s+(?:called\s+|named\s+)?["`']?([^"`'\s]+)["`']?/gi;
+            let mkdirMatch;
+            
+            while ((mkdirMatch = mkdirRegex.exec(aiResponse)) !== null) {
+                const dirName = mkdirMatch[1];
+                
+                const choice = await vscode.window.showInformationMessage(
+                    `Create directory "${dirName}"?`,
+                    'Create',
+                    'Skip'
+                );
+                
+                if (choice === 'Create') {
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                    if (workspaceFolder) {
+                        const dirPath = path.join(workspaceFolder.uri.fsPath, dirName);
+                        fs.mkdirSync(dirPath, { recursive: true });
+                        
+                        webviewView.webview.postMessage({
+                            type: 'response',
+                            content: `✅ Created directory: ${dirName}`
+                        });
+                    }
+                }
+            }
+            
+        } catch (error) {
+            console.error('Error parsing AI actions:', error);
         }
     }
 
@@ -633,6 +949,13 @@ export class GemmaPilotChatProvider implements WebviewViewProvider {
     }
 
     private getWebviewContent(): string {
+        const htmlContent = this.getHtmlTemplate();
+        const jsContent = this.getJavaScriptContent();
+        
+        return `${htmlContent}<script>${jsContent}</script></body></html>`;
+    }
+
+    private getHtmlTemplate(): string {
         return `
             <!DOCTYPE html>
             <html lang="en">
@@ -1158,333 +1481,396 @@ export class GemmaPilotChatProvider implements WebviewViewProvider {
                         </div>
                     </div>
                 </div>
+        `;
+    }
 
-                <script>
-                    const vscode = acquireVsCodeApi();
-                    
-                    // State management
-                    let state = {
-                        attachedFiles: [],
-                        includeSelection: false,
-                        includeWorkspace: false,
-                        isTyping: false
-                    };
-                    
-                    // DOM elements
-                    const elements = {
-                        messagesArea: document.getElementById('messages-area'),
-                        chatInput: document.getElementById('chat-input'),
-                        sendBtn: document.getElementById('send-btn'),
-                        attachedFiles: document.getElementById('attached-files'),
-                        statusIndicator: document.getElementById('status-indicator'),
-                        selectionToggle: document.getElementById('selection-toggle'),
-                        workspaceToggle: document.getElementById('workspace-toggle'),
-                        attachToggle: document.getElementById('attach-toggle'),
-                        explainBtn: document.getElementById('explain-btn'),
-                        fixBtn: document.getElementById('fix-btn'),
-                        optimizeBtn: document.getElementById('optimize-btn'),
-                        testsBtn: document.getElementById('tests-btn'),
-                        docsBtn: document.getElementById('docs-btn'),
-                        analyzeBtn: document.getElementById('analyze-btn')
-                    };
-                    
-                    // Initialize
-                    init();
-                    
-                    function init() {
-                        console.log('🚀 GemmaPilot UI initialized');
-                        setupEventListeners();
-                        updateUI();
-                        elements.chatInput.focus();
+    private getJavaScriptContent(): string {
+        return `
+            const vscode = acquireVsCodeApi();
+            
+            // State management
+            let state = {
+                attachedFiles: [],
+                includeSelection: false,
+                includeWorkspace: false,
+                isTyping: false
+            };
+            
+            // DOM elements
+            const elements = {
+                messagesArea: document.getElementById('messages-area'),
+                chatInput: document.getElementById('chat-input'),
+                sendBtn: document.getElementById('send-btn'),
+                attachedFiles: document.getElementById('attached-files'),
+                statusIndicator: document.getElementById('status-indicator'),
+                selectionToggle: document.getElementById('selection-toggle'),
+                workspaceToggle: document.getElementById('workspace-toggle'),
+                attachToggle: document.getElementById('attach-toggle'),
+                explainBtn: document.getElementById('explain-btn'),
+                fixBtn: document.getElementById('fix-btn'),
+                optimizeBtn: document.getElementById('optimize-btn'),
+                testsBtn: document.getElementById('tests-btn'),
+                docsBtn: document.getElementById('docs-btn'),
+                analyzeBtn: document.getElementById('analyze-btn')
+            };
+            
+            // Initialize
+            init();
+            
+            function init() {
+                console.log('🚀 GemmaPilot UI initialized');
+                setupEventListeners();
+                updateUI();
+                if (elements.chatInput) {
+                    elements.chatInput.focus();
+                }
+            }
+            
+            function setupEventListeners() {
+                // Input handling
+                if (elements.chatInput) {
+                    elements.chatInput.addEventListener('input', handleInputChange);
+                    elements.chatInput.addEventListener('keydown', handleKeyDown);
+                }
+                if (elements.sendBtn) {
+                    elements.sendBtn.addEventListener('click', sendMessage);
+                }
+                
+                // Context toggles
+                if (elements.selectionToggle) {
+                    elements.selectionToggle.addEventListener('click', function() { toggleContext('selection'); });
+                }
+                if (elements.workspaceToggle) {
+                    elements.workspaceToggle.addEventListener('click', function() { toggleContext('workspace'); });
+                }
+                if (elements.attachToggle) {
+                    elements.attachToggle.addEventListener('click', handleAttachFile);
+                }
+                
+                // Quick actions
+                if (elements.explainBtn) {
+                    elements.explainBtn.addEventListener('click', function() { sendQuickAction('explain_code'); });
+                }
+                if (elements.fixBtn) {
+                    elements.fixBtn.addEventListener('click', function() { sendQuickAction('fix_code'); });
+                }
+                if (elements.optimizeBtn) {
+                    elements.optimizeBtn.addEventListener('click', function() { sendQuickAction('optimize_code'); });
+                }
+                if (elements.testsBtn) {
+                    elements.testsBtn.addEventListener('click', function() { sendQuickAction('generate_tests'); });
+                }
+                if (elements.docsBtn) {
+                    elements.docsBtn.addEventListener('click', function() { sendQuickAction('generate_docs'); });
+                }
+                if (elements.analyzeBtn) {
+                    elements.analyzeBtn.addEventListener('click', function() { sendQuickAction('analyze_file'); });
+                }
+                
+                // Message listener
+                window.addEventListener('message', handleMessage);
+            }
+            
+            function handleInputChange() {
+                autoResize();
+                updateSendButton();
+            }
+            
+            function handleKeyDown(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            }
+            
+            function sendMessage() {
+                if (!elements.chatInput) return;
+                
+                const message = elements.chatInput.value.trim();
+                if (!message || state.isTyping) return;
+                
+                addMessage(message, true);
+                setTyping(true);
+                
+                vscode.postMessage({
+                    type: 'chat',
+                    prompt: message,
+                    includeSelection: state.includeSelection,
+                    includeWorkspace: state.includeWorkspace,
+                    attachedFiles: state.attachedFiles
+                });
+                
+                elements.chatInput.value = '';
+                autoResize();
+                updateSendButton();
+            }
+            
+            function sendQuickAction(action) {
+                setTyping(true);
+                vscode.postMessage({ type: action });
+            }
+            
+            function toggleContext(type) {
+                if (type === 'selection') {
+                    state.includeSelection = !state.includeSelection;
+                    if (elements.selectionToggle) {
+                        elements.selectionToggle.classList.toggle('active', state.includeSelection);
                     }
                     
-                    function setupEventListeners() {
-                        // Input handling
-                        elements.chatInput.addEventListener('input', handleInputChange);
-                        elements.chatInput.addEventListener('keydown', handleKeyDown);
-                        elements.sendBtn.addEventListener('click', sendMessage);
-                        
-                        // Context toggles
-                        elements.selectionToggle.addEventListener('click', () => toggleContext('selection'));
-                        elements.workspaceToggle.addEventListener('click', () => toggleContext('workspace'));
-                        elements.attachToggle.addEventListener('click', () => handleAttachFile());
-                        
-                        // Quick actions
-                        elements.explainBtn.addEventListener('click', () => sendQuickAction('explain_code'));
-                        elements.fixBtn.addEventListener('click', () => sendQuickAction('fix_code'));
-                        elements.optimizeBtn.addEventListener('click', () => sendQuickAction('optimize_code'));
-                        elements.testsBtn.addEventListener('click', () => sendQuickAction('generate_tests'));
-                        elements.docsBtn.addEventListener('click', () => sendQuickAction('generate_docs'));
-                        elements.analyzeBtn.addEventListener('click', () => sendQuickAction('analyze_file'));
-                        
-                        // Message listener
-                        window.addEventListener('message', handleMessage);
+                    if (state.includeSelection) {
+                        vscode.postMessage({ type: 'get_selection' });
+                    }
+                } else if (type === 'workspace') {
+                    state.includeWorkspace = !state.includeWorkspace;
+                    if (elements.workspaceToggle) {
+                        elements.workspaceToggle.classList.toggle('active', state.includeWorkspace);
                     }
                     
-                    function handleInputChange() {
-                        autoResize();
-                        updateSendButton();
+                    if (state.includeWorkspace) {
+                        vscode.postMessage({ type: 'get_workspace' });
                     }
-                    
-                    function handleKeyDown(e) {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            sendMessage();
+                }
+            }
+            
+            function handleAttachFile() {
+                vscode.postMessage({ type: 'attach_file' });
+            }
+            
+            function addMessage(content, isUser) {
+                if (!elements.messagesArea) return;
+                
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message message-' + (isUser ? 'user' : 'assistant');
+                
+                messageDiv.innerHTML = 
+                    '<div class="message-header">' +
+                        '<div class="message-avatar">' + (isUser ? 'U' : 'G') + '</div>' +
+                        '<span>' + (isUser ? 'You' : 'GemmaPilot') + '</span>' +
+                        '<span style="opacity: 0.6; font-size: 11px; margin-left: auto;">' +
+                            new Date().toLocaleTimeString() +
+                        '</span>' +
+                    '</div>' +
+                    '<div class="message-content">' + formatContent(content) + '</div>';
+                
+                // Remove welcome message
+                const welcome = elements.messagesArea.querySelector('.welcome-message');
+                if (welcome) {
+                    welcome.remove();
+                }
+                
+                elements.messagesArea.appendChild(messageDiv);
+                scrollToBottom();
+            }
+            
+            function formatContent(content) {
+                // Format code blocks
+                content = content.replace(/\`\`\`([\\w]*)\\n([\\s\\S]*?)\`\`\`/g, 
+                    '<div class="code-block"><pre><code>$2</code></pre></div>');
+                
+                // Format inline code
+                content = content.replace(/\`([^\`]+)\`/g, '<span class="inline-code">$1</span>');
+                
+                // Format bold
+                content = content.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+                
+                // Format italic
+                content = content.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+                
+                // Format line breaks
+                content = content.replace(/\\n/g, '<br>');
+                
+                return content;
+            }
+            
+            function showProgress(message) {
+                if (!elements.messagesArea) return;
+                
+                const progressDiv = document.createElement('div');
+                progressDiv.className = 'progress-indicator';
+                progressDiv.innerHTML = 
+                    '<div class="spinner"></div>' +
+                    '<span>' + message + '</span>';
+                
+                elements.messagesArea.appendChild(progressDiv);
+                scrollToBottom();
+                
+                return progressDiv;
+            }
+            
+            function removeProgress() {
+                if (!elements.messagesArea) return;
+                
+                const progress = elements.messagesArea.querySelector('.progress-indicator');
+                if (progress) {
+                    progress.remove();
+                }
+            }
+            
+            function showError(message) {
+                if (!elements.messagesArea) return;
+                
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'error-message';
+                errorDiv.innerHTML = '❌ ' + message;
+                
+                elements.messagesArea.appendChild(errorDiv);
+                scrollToBottom();
+            }
+            
+            function addSuggestions(suggestions) {
+                if (!suggestions || suggestions.length === 0 || !elements.messagesArea) return;
+                
+                const suggestionsDiv = document.createElement('div');
+                suggestionsDiv.className = 'suggestions';
+                
+                let suggestionsHtml = '<div class="suggestions-title">💡 Suggestions</div>';
+                for (let i = 0; i < suggestions.length; i++) {
+                    suggestionsHtml += '<div class="suggestion-item" onclick="applySuggestion(\\'' + 
+                        suggestions[i].replace(/'/g, "\\\\'") + '\\')">' + suggestions[i] + '</div>';
+                }
+                
+                suggestionsDiv.innerHTML = suggestionsHtml;
+                elements.messagesArea.appendChild(suggestionsDiv);
+                scrollToBottom();
+            }
+            
+            function applySuggestion(suggestion) {
+                if (!elements.chatInput) return;
+                
+                elements.chatInput.value = suggestion;
+                autoResize();
+                updateSendButton();
+                elements.chatInput.focus();
+            }
+            
+            function addFileChip(fileName) {
+                if (!elements.attachedFiles) return;
+                
+                const chip = document.createElement('div');
+                chip.className = 'file-chip';
+                chip.innerHTML = 
+                    '<span>📎 ' + fileName + '</span>' +
+                    '<span class="file-chip-remove" onclick="removeFile(\\'' + 
+                        fileName.replace(/'/g, "\\\\'") + '\\')">×</span>';
+                elements.attachedFiles.appendChild(chip);
+            }
+            
+            function removeFile(fileName) {
+                state.attachedFiles = state.attachedFiles.filter(function(f) { 
+                    return f.fileName !== fileName; 
+                });
+                updateAttachedFilesUI();
+            }
+            
+            function updateAttachedFilesUI() {
+                if (!elements.attachedFiles) return;
+                
+                elements.attachedFiles.innerHTML = '';
+                for (let i = 0; i < state.attachedFiles.length; i++) {
+                    addFileChip(state.attachedFiles[i].fileName);
+                }
+            }
+            
+            function setTyping(isTyping) {
+                state.isTyping = isTyping;
+                updateUI();
+                
+                if (isTyping) {
+                    showProgress('Thinking...');
+                } else {
+                    removeProgress();
+                }
+            }
+            
+            function updateSendButton() {
+                if (!elements.chatInput || !elements.sendBtn) return;
+                
+                const hasText = elements.chatInput.value.trim().length > 0;
+                elements.sendBtn.disabled = !hasText || state.isTyping;
+            }
+            
+            function updateUI() {
+                updateSendButton();
+                
+                // Update status indicator
+                if (elements.statusIndicator) {
+                    elements.statusIndicator.style.background = state.isTyping ? '#ffc107' : '#28a745';
+                }
+            }
+            
+            function autoResize() {
+                if (!elements.chatInput) return;
+                
+                elements.chatInput.style.height = 'auto';
+                const newHeight = Math.min(elements.chatInput.scrollHeight, 120);
+                elements.chatInput.style.height = newHeight + 'px';
+            }
+            
+            function scrollToBottom() {
+                if (!elements.messagesArea) return;
+                
+                elements.messagesArea.scrollTop = elements.messagesArea.scrollHeight;
+            }
+            
+            function handleMessage(event) {
+                const message = event.data;
+                console.log('📥 Received:', message);
+                
+                setTyping(false);
+                
+                switch (message.type) {
+                    case 'response':
+                        addMessage(message.content);
+                        if (message.suggestions) {
+                            addSuggestions(message.suggestions);
                         }
-                    }
-                    
-                    function sendMessage() {
-                        const message = elements.chatInput.value.trim();
-                        if (!message || state.isTyping) return;
+                        break;
                         
-                        addMessage(message, true);
-                        setTyping(true);
+                    case 'error':
+                        showError(message.error);
+                        break;
                         
-                        vscode.postMessage({
-                            type: 'chat',
-                            prompt: message,
-                            includeSelection: state.includeSelection,
-                            includeWorkspace: state.includeWorkspace,
-                            attachedFiles: state.attachedFiles
+                    case 'file_attached':
+                        state.attachedFiles.push({
+                            fileName: message.fileName,
+                            content: message.content
                         });
-                        
-                        elements.chatInput.value = '';
-                        autoResize();
-                        updateSendButton();
-                    }
-                    
-                    function sendQuickAction(action) {
-                        setTyping(true);
-                        vscode.postMessage({ type: action });
-                    }
-                    
-                    function toggleContext(type) {
-                        if (type === 'selection') {
-                            state.includeSelection = !state.includeSelection;
-                            elements.selectionToggle.classList.toggle('active', state.includeSelection);
-                            
-                            if (state.includeSelection) {
-                                vscode.postMessage({ type: 'get_selection' });
-                            }
-                        } else if (type === 'workspace') {
-                            state.includeWorkspace = !state.includeWorkspace;
-                            elements.workspaceToggle.classList.toggle('active', state.includeWorkspace);
-                            
-                            if (state.includeWorkspace) {
-                                vscode.postMessage({ type: 'get_workspace' });
-                            }
-                        }
-                    }
-                    
-                    function handleAttachFile() {
-                        vscode.postMessage({ type: 'attach_file' });
-                    }
-                    
-                    function addMessage(content, isUser = false) {
-                        const messageDiv = document.createElement('div');
-                        messageDiv.className = \`message message-\${isUser ? 'user' : 'assistant'}\`;
-                        
-                        messageDiv.innerHTML = \`
-                            <div class="message-header">
-                                <div class="message-avatar">\${isUser ? 'U' : 'G'}</div>
-                                <span>\${isUser ? 'You' : 'GemmaPilot'}</span>
-                                <span style="opacity: 0.6; font-size: 11px; margin-left: auto;">
-                                    \${new Date().toLocaleTimeString()}
-                                </span>
-                            </div>
-                            <div class="message-content">\${formatContent(content)}</div>
-                        \`;
-                        
-                        // Remove welcome message
-                        const welcome = elements.messagesArea.querySelector('.welcome-message');
-                        if (welcome) welcome.remove();
-                        
-                        elements.messagesArea.appendChild(messageDiv);
-                        scrollToBottom();
-                    }
-                    
-                    function formatContent(content) {
-                        // Format code blocks
-                        content = content.replace(/\`\`\`([\\w]*)\n([\\s\\S]*?)\`\`\`/g, 
-                            '<div class="code-block"><pre><code>$2</code></pre></div>');
-                        
-                        // Format inline code
-                        content = content.replace(/\`([^\`]+)\`/g, '<span class="inline-code">$1</span>');
-                        
-                        // Format bold
-                        content = content.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
-                        
-                        // Format italic
-                        content = content.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
-                        
-                        // Format line breaks
-                        content = content.replace(/\n/g, '<br>');
-                        
-                        return content;
-                    }
-                    
-                    function showProgress(message) {
-                        const progressDiv = document.createElement('div');
-                        progressDiv.className = 'progress-indicator';
-                        progressDiv.innerHTML = \`
-                            <div class="spinner"></div>
-                            <span>\${message}</span>
-                        \`;
-                        
-                        elements.messagesArea.appendChild(progressDiv);
-                        scrollToBottom();
-                        
-                        return progressDiv;
-                    }
-                    
-                    function removeProgress() {
-                        const progress = elements.messagesArea.querySelector('.progress-indicator');
-                        if (progress) progress.remove();
-                    }
-                    
-                    function showError(message) {
-                        const errorDiv = document.createElement('div');
-                        errorDiv.className = 'error-message';
-                        errorDiv.innerHTML = \`❌ \${message}\`;
-                        
-                        elements.messagesArea.appendChild(errorDiv);
-                        scrollToBottom();
-                    }
-                    
-                    function addSuggestions(suggestions) {
-                        if (!suggestions || suggestions.length === 0) return;
-                        
-                        const suggestionsDiv = document.createElement('div');
-                        suggestionsDiv.className = 'suggestions';
-                        suggestionsDiv.innerHTML = \`
-                            <div class="suggestions-title">💡 Suggestions</div>
-                            \${suggestions.map(suggestion => 
-                                \`<div class="suggestion-item" onclick="applySuggestion('\${suggestion}')">\${suggestion}</div>\`
-                            ).join('')}
-                        \`;
-                        
-                        elements.messagesArea.appendChild(suggestionsDiv);
-                        scrollToBottom();
-                    }
-                    
-                    function applySuggestion(suggestion) {
-                        elements.chatInput.value = suggestion;
-                        autoResize();
-                        updateSendButton();
-                        elements.chatInput.focus();
-                    }
-                    
-                    function addFileChip(fileName) {
-                        const chip = document.createElement('div');
-                        chip.className = 'file-chip';
-                        chip.innerHTML = \`
-                            <span>📎 \${fileName}</span>
-                            <span class="file-chip-remove" onclick="removeFile('\${fileName}')">×</span>
-                        \`;
-                        elements.attachedFiles.appendChild(chip);
-                    }
-                    
-                    function removeFile(fileName) {
-                        state.attachedFiles = state.attachedFiles.filter(f => f.fileName !== fileName);
                         updateAttachedFilesUI();
-                    }
-                    
-                    function updateAttachedFilesUI() {
-                        elements.attachedFiles.innerHTML = '';
-                        state.attachedFiles.forEach(file => addFileChip(file.fileName));
-                    }
-                    
-                    function setTyping(isTyping) {
-                        state.isTyping = isTyping;
-                        updateUI();
+                        break;
                         
-                        if (isTyping) {
-                            showProgress('Thinking...');
+                    case 'selection_result':
+                        if (message.hasSelection) {
+                            addMessage('✅ Selected ' + message.selection.length + ' characters from ' + message.fileName, false);
                         } else {
-                            removeProgress();
+                            addMessage('ℹ️ No text currently selected', false);
+                            state.includeSelection = false;
+                            if (elements.selectionToggle) {
+                                elements.selectionToggle.classList.remove('active');
+                            }
                         }
-                    }
-                    
-                    function updateSendButton() {
-                        const hasText = elements.chatInput.value.trim().length > 0;
-                        elements.sendBtn.disabled = !hasText || state.isTyping;
-                    }
-                    
-                    function updateUI() {
-                        updateSendButton();
+                        break;
                         
-                        // Update status indicator
-                        elements.statusIndicator.style.background = state.isTyping ? '#ffc107' : '#28a745';
-                    }
-                    
-                    function autoResize() {
-                        elements.chatInput.style.height = 'auto';
-                        const newHeight = Math.min(elements.chatInput.scrollHeight, 120);
-                        elements.chatInput.style.height = newHeight + 'px';
-                    }
-                    
-                    function scrollToBottom() {
-                        elements.messagesArea.scrollTop = elements.messagesArea.scrollHeight;
-                    }
-                    
-                    function handleMessage(event) {
-                        const message = event.data;
-                        console.log('📥 Received:', message);
-                        
-                        setTyping(false);
-                        
-                        switch (message.type) {
-                            case 'response':
-                                addMessage(message.content);
-                                if (message.suggestions) {
-                                    addSuggestions(message.suggestions);
-                                }
-                                break;
-                                
-                            case 'error':
-                                showError(message.error);
-                                break;
-                                
-                            case 'file_attached':
-                                state.attachedFiles.push({
-                                    fileName: message.fileName,
-                                    content: message.content
-                                });
-                                updateAttachedFilesUI();
-                                break;
-                                
-                            case 'selection_result':
-                                if (message.hasSelection) {
-                                    addMessage(\`✅ Selected \${message.selection.length} characters from \${message.fileName}\`, false);
-                                } else {
-                                    addMessage('ℹ️ No text currently selected', false);
-                                    state.includeSelection = false;
-                                    elements.selectionToggle.classList.remove('active');
-                                }
-                                break;
-                                
-                            case 'workspace_result':
-                                if (message.hasWorkspace) {
-                                    addMessage(\`✅ Workspace: \${message.workspaceName} (\${message.fileCount} files)\`, false);
-                                } else {
-                                    addMessage('ℹ️ No workspace folder open', false);
-                                    state.includeWorkspace = false;
-                                    elements.workspaceToggle.classList.remove('active');
-                                }
-                                break;
-                                
-                            case 'progress':
-                                showProgress(message.message);
-                                break;
+                    case 'workspace_result':
+                        if (message.hasWorkspace) {
+                            addMessage('✅ Workspace: ' + message.workspaceName + ' (' + message.fileCount + ' files)', false);
+                        } else {
+                            addMessage('ℹ️ No workspace folder open', false);
+                            state.includeWorkspace = false;
+                            if (elements.workspaceToggle) {
+                                elements.workspaceToggle.classList.remove('active');
+                            }
                         }
-                    }
-                    
-                    // Global functions for inline event handlers
-                    window.removeFile = removeFile;
-                    window.applySuggestion = applySuggestion;
-                </script>
-            </body>
-            </html>
+                        break;
+                        
+                    case 'progress':
+                        showProgress(message.message);
+                        break;
+                }
+            }
+            
+            // Global functions for inline event handlers
+            window.removeFile = removeFile;
+            window.applySuggestion = applySuggestion;
         `;
     }
 }
